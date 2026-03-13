@@ -39,6 +39,7 @@
     "submit": "Submit",
     "switchView": "Switch view",
     "toggleSidebar": "Toggle sidebar",
+    "unarchive": "Unarchive",
     "update": "Update",
     "upload": "Upload",
     "openFile": "Open file",
@@ -61,6 +62,10 @@
   },
   "upload": {
     "abortUpload": "Are you sure you wish to abort?"
+  },
+  "unarchive": {
+    "title": "Unarchive tasks ({running} running)",
+    "destination": "Destination folder: {destination}"
   },
   "errors": {
     "forbidden": "You don't have permissions to access this.",

@@ -1,12 +1,12 @@
 package fbhttp
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"io"
-	"compress/gzip"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -111,7 +111,7 @@ func getStaticHandlers(store *storage.Storage, server *settings.Server, assetsFs
 
 		w.Header().Set("x-xss-protection", "1; mode=block")
 		return handleWithStaticData(w, r, d, assetsFs, "public/index.html", "text/html; charset=utf-8")
-	}, "", store, server)
+	}, "", store, server, NewUnarchiveTaskManager(100))
 
 	static = handle(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
 		if r.Method != http.MethodGet {
@@ -153,7 +153,7 @@ func getStaticHandlers(store *storage.Storage, server *settings.Server, assetsFs
 		defer f.Close()
 
 		acceptEncoding := r.Header.Get("Accept-Encoding")
-		if strings.Contains(acceptEncoding, "gzip") {		
+		if strings.Contains(acceptEncoding, "gzip") {
 			w.Header().Set("Content-Encoding", "gzip")
 			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 
@@ -168,14 +168,14 @@ func getStaticHandlers(store *storage.Storage, server *settings.Server, assetsFs
 			defer gzReader.Close()
 
 			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-			
+
 			if _, err := io.Copy(w, gzReader); err != nil {
 				return http.StatusInternalServerError, err
 			}
 		}
 
 		return 0, nil
-	}, "/static/", store, server)
+	}, "/static/", store, server, NewUnarchiveTaskManager(100))
 
 	return index, static
 }

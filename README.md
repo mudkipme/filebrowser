@@ -8,6 +8,8 @@
 
 File Browser provides a file managing interface within a specified directory and it can be used to upload, delete, preview and edit your files. It is a **create-your-own-cloud**-kind of software where you can just install it on your server, direct it to a path and access your files through a nice web interface.
 
+> Fork note: this fork stays synced with upstream `filebrowser/filebrowser` and only carries one addition: an `Unarchive` feature for supported archive files.
+
 ## Documentation
 
 Documentation on how to install, configure, and contribute to this project is hosted at [filebrowser.org](https://filebrowser.org).

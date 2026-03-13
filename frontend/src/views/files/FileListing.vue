@@ -263,6 +263,12 @@
           @hide="hideContextMenu"
         >
           <action
+            v-if="canUnarchive"
+            icon="folder_zip"
+            :label="t('buttons.unarchive')"
+            @action="runUnarchive"
+          />
+          <action
             v-if="headerButtons.share"
             icon="share"
             :label="t('buttons.share')"
@@ -344,10 +350,12 @@ import { useAuthStore } from "@/stores/auth";
 import { useClipboardStore } from "@/stores/clipboard";
 import { useFileStore } from "@/stores/file";
 import { useLayoutStore } from "@/stores/layout";
+import { useUnarchiveStore } from "@/stores/unarchive";
 
 import { users, files as api } from "@/api";
 import { enableExec } from "@/utils/constants";
 import * as upload from "@/utils/upload";
+import { isSupportedArchive } from "@/utils/archive";
 import css from "@/utils/css";
 import { throttle } from "lodash-es";
 import { Base64 } from "js-base64";
@@ -385,6 +393,7 @@ const clipboardStore = useClipboardStore();
 const authStore = useAuthStore();
 const fileStore = useFileStore();
 const layoutStore = useLayoutStore();
+const unarchiveStore = useUnarchiveStore();
 
 const { req } = storeToRefs(fileStore);
 
@@ -436,6 +445,24 @@ const files = computed((): Resource[] => {
   if (_showLimit < 0) _showLimit = 0;
 
   return items.value.files.slice(0, _showLimit);
+});
+
+const selectedItem = computed<ResourceItem | null>(() => {
+  if (fileStore.selectedCount !== 1 || !fileStore.req) {
+    return null;
+  }
+
+  return fileStore.req.items[fileStore.selected[0]] || null;
+});
+
+const canUnarchive = computed(() => {
+  const item = selectedItem.value;
+  return (
+    !!item &&
+    !item.isDir &&
+    !!authStore.user?.perm.create &&
+    isSupportedArchive(item.name)
+  );
 });
 
 const nameIcon = computed(() => {
@@ -997,6 +1024,19 @@ const download = () => {
       api.download(format, ...files);
     },
   });
+};
+
+const runUnarchive = async () => {
+  hideContextMenu();
+
+  const item = selectedItem.value;
+  if (!item) return;
+
+  try {
+    await unarchiveStore.start(item.url);
+  } catch (error) {
+    $showError(error as Error, false);
+  }
 };
 
 const switchView = async () => {

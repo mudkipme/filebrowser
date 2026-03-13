@@ -2,7 +2,13 @@ import { useAuthStore } from "@/stores/auth";
 import { useLayoutStore } from "@/stores/layout";
 import { baseURL } from "@/utils/constants";
 import { upload as postTus, useTus } from "./tus";
-import { createURL, fetchURL, removePrefix, StatusError } from "./utils";
+import {
+  createURL,
+  fetchJSON,
+  fetchURL,
+  removePrefix,
+  StatusError,
+} from "./utils";
 import { isEncodableResponse, makeRawResource } from "@/utils/encodings";
 
 export async function fetch(url: string, signal?: AbortSignal) {
@@ -195,6 +201,19 @@ export function move(items: any[], overwrite = false, rename = false) {
 
 export function copy(items: any[], overwrite = false, rename = false) {
   return moveCopy(items, true, overwrite, rename);
+}
+
+export async function unarchive(source: string): Promise<UnarchiveJob> {
+  const res = await resourceAction(`${source}?action=unarchive`, "PATCH");
+  return (await res.json()) as UnarchiveJob;
+}
+
+export function listUnarchiveTasks() {
+  return fetchJSON<UnarchiveJob[]>("/api/unarchive");
+}
+
+export async function deleteUnarchiveTask(id: number) {
+  return fetchURL(`/api/unarchive/${id}`, { method: "DELETE" });
 }
 
 export async function checksum(url: string, algo: ChecksumAlg) {

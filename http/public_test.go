@@ -95,7 +95,7 @@ func TestPublicShareHandlerAuthentication(t *testing.T) {
 				}
 
 				recorder := httptest.NewRecorder()
-				handler := handle(handler, "", storage, &settings.Server{})
+				handler := handle(handler, "", storage, &settings.Server{}, NewUnarchiveTaskManager(100))
 
 				handler.ServeHTTP(recorder, tc.req)
 				result := recorder.Result()

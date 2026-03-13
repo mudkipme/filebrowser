@@ -39,6 +39,7 @@
     "submit": "提交",
     "switchView": "切换显示方式",
     "toggleSidebar": "切换侧边栏",
+    "unarchive": "解压",
     "update": "更新",
     "upload": "上传",
     "openFile": "打开文件",
@@ -61,6 +62,10 @@
   },
   "upload": {
     "abortUpload": "你确定要中止吗？"
+  },
+  "unarchive": {
+    "title": "解压任务（进行中 {running}）",
+    "destination": "目标文件夹：{destination}"
   },
   "errors": {
     "forbidden": "你无权限访问",

@@ -207,16 +207,23 @@ var resourcePutHandler = withUser(func(w http.ResponseWriter, r *http.Request, d
 })
 
 func resourcePatchHandler(fileCache FileCache) handleFunc {
-	return withUser(func(_ http.ResponseWriter, r *http.Request, d *data) (int, error) {
+	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
 		src := r.URL.Path
 		dst := r.URL.Query().Get("destination")
 		action := r.URL.Query().Get("action")
-		dst, err := url.QueryUnescape(dst)
-		if !d.Check(src) || !d.Check(dst) {
-			return http.StatusForbidden, nil
+		var err error
+		if action == "unarchive" && dst == "" {
+			dst, err = unarchiveDestination(src)
+			if err != nil {
+				return http.StatusBadRequest, err
+			}
 		}
+		dst, err = url.QueryUnescape(dst)
 		if err != nil {
 			return errToStatus(err), err
+		}
+		if !d.Check(src) || !d.Check(dst) {
+			return http.StatusForbidden, nil
 		}
 		if dst == "/" || src == "/" {
 			return http.StatusForbidden, nil
@@ -225,6 +232,41 @@ func resourcePatchHandler(fileCache FileCache) handleFunc {
 		err = checkParent(src, dst)
 		if err != nil {
 			return http.StatusBadRequest, err
+		}
+
+		if action == "unarchive" {
+			if !d.user.Perm.Create {
+				return http.StatusForbidden, nil
+			}
+			if _, err := unarchiveDestination(src); err != nil {
+				return http.StatusBadRequest, err
+			}
+
+			if _, err := d.user.Fs.Stat(dst); err == nil {
+				return http.StatusConflict, nil
+			} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return errToStatus(err), err
+			}
+
+			task := d.unarchiveTasks.Create(d.user.ID, src, dst, path.Base(src))
+			taskUser := *d.user
+			taskRunner := d.Runner
+			settings := d.settings
+			tasks := d.unarchiveTasks
+
+			go func() {
+				err := taskRunner.RunHook(func() error {
+					return unarchive(context.Background(), taskUser.Fs, src, dst, settings.FileMode, settings.DirMode)
+				}, action, src, dst, &taskUser)
+				if err != nil {
+					tasks.Fail(task.ID, err)
+					return
+				}
+
+				tasks.Success(task.ID)
+			}()
+
+			return renderJSONWithStatus(w, r, http.StatusAccepted, task)
 		}
 
 		srcInfo, _ := d.user.Fs.Stat(src)
@@ -366,6 +408,12 @@ func patchAction(ctx context.Context, action, src, dst string, d *data, fileCach
 		}
 
 		return fileutils.MoveFile(d.user.Fs, src, dst, d.settings.FileMode, d.settings.DirMode)
+	case "unarchive":
+		if !d.user.Perm.Create {
+			return fberrors.ErrPermissionDenied
+		}
+
+		return unarchive(ctx, d.user.Fs, src, dst, d.settings.FileMode, d.settings.DirMode)
 	default:
 		return fmt.Errorf("unsupported action %s: %w", action, fberrors.ErrInvalidRequestParams)
 	}

@@ -25,6 +25,7 @@ func NewHandler(
 	assetsFs fs.FS,
 ) (http.Handler, error) {
 	server.Clean()
+	unarchiveTasks := NewUnarchiveTaskManager(100)
 
 	r := mux.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
@@ -36,7 +37,7 @@ func NewHandler(
 	index, static := getStaticHandlers(store, server, assetsFs)
 
 	monkey := func(fn handleFunc, prefix string) http.Handler {
-		return handle(fn, prefix, store, server)
+		return handle(fn, prefix, store, server, unarchiveTasks)
 	}
 
 	r.HandleFunc("/health", healthHandler)
@@ -69,6 +70,8 @@ func NewHandler(
 	api.PathPrefix("/tus").Handler(monkey(tusDeleteHandler(uploadCache), "/api/tus")).Methods("DELETE")
 
 	api.PathPrefix("/usage").Handler(monkey(diskUsage, "/api/usage")).Methods("GET")
+	api.Handle("/unarchive", monkey(unarchiveTasksGetHandler, "")).Methods("GET")
+	api.Handle("/unarchive/{id:[0-9]+}", monkey(unarchiveTaskDeleteHandler, "")).Methods("DELETE")
 
 	api.Path("/shares").Handler(monkey(shareListHandler, "/api/shares")).Methods("GET")
 	api.PathPrefix("/share").Handler(monkey(shareGetsHandler, "/api/share")).Methods("GET")

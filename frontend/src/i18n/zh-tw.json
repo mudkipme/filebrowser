@@ -39,6 +39,7 @@
     "submit": "提交",
     "switchView": "切換顯示方式",
     "toggleSidebar": "切換側邊欄",
+    "unarchive": "解壓縮",
     "update": "更新",
     "upload": "上傳",
     "openFile": "開啟檔案",
@@ -61,6 +62,10 @@
   },
   "upload": {
     "abortUpload": "你確定要中止嗎？"
+  },
+  "unarchive": {
+    "title": "解壓縮任務（進行中 {running}）",
+    "destination": "目標資料夾：{destination}"
   },
   "errors": {
     "forbidden": "您無權訪問。",

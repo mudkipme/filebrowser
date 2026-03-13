@@ -18,11 +18,12 @@ type handleFunc func(w http.ResponseWriter, r *http.Request, d *data) (int, erro
 
 type data struct {
 	*runner.Runner
-	settings *settings.Settings
-	server   *settings.Server
-	store    *storage.Storage
-	user     *users.User
-	raw      interface{}
+	settings       *settings.Settings
+	server         *settings.Server
+	store          *storage.Storage
+	user           *users.User
+	unarchiveTasks *UnarchiveTaskManager
+	raw            interface{}
 }
 
 // Check implements rules.Checker.
@@ -47,7 +48,7 @@ func (d *data) Check(path string) bool {
 	return allow
 }
 
-func handle(fn handleFunc, prefix string, store *storage.Storage, server *settings.Server) http.Handler {
+func handle(fn handleFunc, prefix string, store *storage.Storage, server *settings.Server, unarchiveTasks *UnarchiveTaskManager) http.Handler {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for k, v := range globalHeaders {
 			w.Header().Set(k, v)
@@ -60,10 +61,11 @@ func handle(fn handleFunc, prefix string, store *storage.Storage, server *settin
 		}
 
 		status, err := fn(w, r, &data{
-			Runner:   &runner.Runner{Enabled: server.EnableExec, Settings: settings},
-			store:    store,
-			settings: settings,
-			server:   server,
+			Runner:         &runner.Runner{Enabled: server.EnableExec, Settings: settings},
+			store:          store,
+			settings:       settings,
+			server:         server,
+			unarchiveTasks: unarchiveTasks,
 		})
 
 		if status >= 400 || err != nil {
