@@ -208,7 +208,7 @@ var resourcePutHandler = withUser(func(w http.ResponseWriter, r *http.Request, d
 
 func resourcePatchHandler(fileCache FileCache) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		src := r.URL.Path
+		src := path.Clean("/" + r.URL.Path)
 		dst := r.URL.Query().Get("destination")
 		action := r.URL.Query().Get("action")
 		var err error
@@ -222,6 +222,7 @@ func resourcePatchHandler(fileCache FileCache) handleFunc {
 		if err != nil {
 			return errToStatus(err), err
 		}
+		dst = path.Clean("/" + dst)
 		if !d.Check(src) || !d.Check(dst) {
 			return http.StatusForbidden, nil
 		}
