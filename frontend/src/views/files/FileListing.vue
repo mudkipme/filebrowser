@@ -659,6 +659,7 @@ const copyCut = (event: Event | KeyboardEvent): void => {
       from: fileStore.req.items[i].url,
       name: fileStore.req.items[i].name,
       size: fileStore.req.items[i].size,
+      isDir: fileStore.req.items[i].isDir,
       modified: fileStore.req.items[i].modified,
     });
   }
@@ -688,6 +689,7 @@ const paste = async (event: Event) => {
       to,
       name: item.name,
       size: item.size,
+      isDir: item.isDir,
       modified: item.modified,
       overwrite: false,
       rename: clipboardStore.path == route.path,
@@ -724,7 +726,7 @@ const paste = async (event: Event) => {
   }
 
   const path = route.path.endsWith("/") ? route.path : route.path + "/";
-  const conflict = await upload.checkConflict(items, path);
+  const conflict = await upload.checkConflict(items, path, true);
 
   if (conflict.length > 0) {
     layoutStore.showHover({
