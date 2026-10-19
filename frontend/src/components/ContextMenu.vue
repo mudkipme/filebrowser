@@ -256,7 +256,7 @@ import { expandBeforeEnter, expandEnter, expandLeave } from "@/utils/expandTrans
 function isArchivePath(pathOrName) {
   if (!pathOrName || typeof pathOrName !== "string") return false;
   const lower = pathOrName.toLowerCase();
-  return lower.endsWith(".zip") || lower.endsWith(".tar.gz") || lower.endsWith(".tgz");
+  return [".zip", ".tar.gz", ".tgz", ".7z", ".rar"].some((ext) => lower.endsWith(ext));
 }
 
 export default {

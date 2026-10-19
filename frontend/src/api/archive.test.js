@@ -19,4 +19,9 @@ describe("ZIP encoding requests", () => {
     await unarchive({ fromSource: "media", toSource: "other", path: "/test.zip", destination: "/out", filenameEncoding: "cp932", deleteAfter: true });
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ fromSource: "media", toSource: "other", path: "/test.zip", destination: "/out", filenameEncoding: "cp932", deleteAfter: true });
   });
+  it("sends the archive password", async () => {
+    fetchMock.mockResolvedValue({ json: async () => ({ path: "/out" }) });
+    await unarchive({ fromSource: "media", path: "/test.zip", destination: "/out", password: " password " });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ fromSource: "media", path: "/test.zip", destination: "/out", password: " password " });
+  });
 });

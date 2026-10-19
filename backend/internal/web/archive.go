@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/gtsteffaniak/filebrowser/backend/internal/activity"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/adapters/fs/files"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/adapters/fs/fileutils"
+	"github.com/gtsteffaniak/filebrowser/backend/internal/archivecrypto"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/archiveencoding"
 	activitydb "github.com/gtsteffaniak/filebrowser/backend/internal/database/activity"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/state"
@@ -383,16 +385,17 @@ func archiveCreateHandler(w http.ResponseWriter, r *http.Request, d *Context) (i
 // unarchiveHandler extracts an archive on the server. POST /resources/unarchive — server-side only.
 //
 // @Summary Extract an archive on the server
-// @Description Extracts a zip or tar.gz archive on the server into the given destination directory. Server-side only; no extracted bytes are returned. Supports extracting to a different source via toSource. Requires create permission. Archive size is checked against server.maxArchiveSizeGB limit if configured.
+// @Description Extracts a zip, tar.gz, 7z, or rar archive on the server into the given destination directory. Server-side only; no extracted bytes are returned. Supports extracting to a different source via toSource. Requires create permission. Archive size is checked against server.maxArchiveSizeGB limit if configured. Split volumes and links in 7z/RAR archives are unsupported.
 // @Description
 // @Description **Request body parameters:**
 // @Description - **fromSource** (string, required): Source name where the archive file lives. Example: `"default"`
 // @Description - **toSource** (string, optional): Source name where contents will be extracted. Defaults to fromSource if omitted. Example: `"restored"`
-// @Description - **path** (string, required): Path to the archive file (on fromSource). Must be .zip, .tar.gz, or .tgz. Example: `"/downloads/data.zip"`
+// @Description - **path** (string, required): Path to the archive file (on fromSource). Must be .zip, .tar.gz, .tgz, .7z, or .rar. Example: `"/downloads/data.zip"`
 // @Description - **destination** (string, required): Directory path (on toSource) to extract into. Example: `"/projects/imported"`
 // @Description - **deleteAfter** (boolean, optional): If true, delete the archive file after successful extraction. Default: false. Example: `true`
 // @Description - **filenameEncoding** (string, optional): Fallback ZIP filename encoding: utf-8, cp932, gb18030, big5, euc-kr, cp437, windows-1252. Unicode metadata takes precedence. Omit to use a suggestion; ambiguous encodings require a selection.
 // @Description - **preview** (boolean, optional): Return ZIP encoding candidates and sample filenames without extracting or deleting anything. Requires the same source/destination permissions as extraction.
+// @Description - **password** (string, optional): Password for an encrypted ZIP (ZipCrypto or WinZip AES), 7z, or RAR archive.
 // @Tags Resources
 // @Accept json
 // @Produce json
@@ -523,14 +526,18 @@ func unarchiveHandler(w http.ResponseWriter, r *http.Request, d *Context) (int, 
 	}
 	var extractErr error
 	if strings.HasSuffix(lower, ".zip") {
-		extractErr = extractZipWithEncoding(archiveReal, destReal, req.FilenameEncoding)
+		extractErr = extractZipWithOptions(r.Context(), archiveReal, destReal, req.FilenameEncoding, req.Password)
 	} else if strings.HasSuffix(lower, ".tar.gz") || (strings.HasSuffix(lower, ".tgz")) {
 		extractErr = extractTarGz(archiveReal, destReal)
+	} else if strings.HasSuffix(lower, ".7z") {
+		extractErr = extractSevenZip(r.Context(), archiveReal, destReal, req.Password)
+	} else if strings.HasSuffix(lower, ".rar") {
+		extractErr = extractRar(r.Context(), archiveReal, destReal, req.Password)
 	} else {
-		return http.StatusBadRequest, fmt.Errorf("unsupported archive format (use .zip or .tar.gz)")
+		return http.StatusBadRequest, fmt.Errorf("unsupported archive format (use .zip, .tar.gz, .tgz, .7z, or .rar)")
 	}
 	if extractErr != nil {
-		if errors.Is(extractErr, archiveencoding.ErrEncoding) {
+		if errors.Is(extractErr, archiveencoding.ErrEncoding) || errors.Is(extractErr, archivecrypto.ErrPassword) || errors.Is(extractErr, archivecrypto.ErrAuthentication) {
 			return http.StatusBadRequest, extractErr
 		}
 		return http.StatusInternalServerError, extractErr
@@ -947,7 +954,7 @@ type unarchiveRequest struct {
 	FromSource string `json:"fromSource"`
 	// Source name where contents will be extracted (optional; default: fromSource). Example: "restored"
 	ToSource string `json:"toSource"`
-	// Path to the archive file on fromSource; .zip, .tar.gz, or .tgz (required). Example: "/downloads/data.zip"
+	// Path to the archive file on fromSource; .zip, .tar.gz, .tgz, .7z, or .rar (required). Example: "/downloads/data.zip"
 	Path string `json:"path"`
 	// Directory path on toSource to extract into (required). Example: "/projects/imported"
 	Destination string `json:"destination"`
@@ -957,6 +964,8 @@ type unarchiveRequest struct {
 	FilenameEncoding string `json:"filenameEncoding,omitempty"`
 	// Inspect ZIP names without writing or deleting files.
 	Preview bool `json:"preview,omitempty"`
+	// Password for encrypted ZIP/7z/RAR archives. Never persisted.
+	Password string `json:"password,omitempty"`
 }
 
 // normalizeArchiveEntryName turns a raw zip/tar name into a safe relative path (slash-separated).
@@ -1143,11 +1152,20 @@ func extractZip(archivePath, destDir string) error {
 }
 
 func extractZipWithEncoding(archivePath, destDir, charset string) error {
+	return extractZipWithOptions(context.Background(), archivePath, destDir, charset, "")
+}
+
+func extractZipWithOptions(ctx context.Context, archivePath, destDir, charset, password string) error {
 	r, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
+	for _, f := range r.File {
+		if f.Flags&1 != 0 && password == "" {
+			return archivecrypto.ErrPassword
+		}
+	}
 	names, err := archiveencoding.DecodeNames(r.File, charset)
 	if err != nil {
 		return err
@@ -1200,6 +1218,9 @@ func extractZipWithEncoding(archivePath, destDir, charset string) error {
 	})
 
 	for _, o := range ordered {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
 		f := o.f
 		var destPath string
 		destPath, err = safeExtractPath(destDir, o.name)
@@ -1219,7 +1240,7 @@ func extractZipWithEncoding(archivePath, destDir, charset string) error {
 
 		if mode.Type() == fs.ModeSymlink {
 			var rc io.ReadCloser
-			rc, err = f.Open()
+			rc, err = archivecrypto.Open(ctx, f, password)
 			if err != nil {
 				return err
 			}
@@ -1239,7 +1260,7 @@ func extractZipWithEncoding(archivePath, destDir, charset string) error {
 		}
 
 		var rc io.ReadCloser
-		rc, err = f.Open()
+		rc, err = archivecrypto.Open(ctx, f, password)
 		if err != nil {
 			return err
 		}

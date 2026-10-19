@@ -1,0 +1,47 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository != 'gtsteffaniak/filebrowser' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Merge upstream main and publish if changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.parent.full_name')
+          if [[ "$upstream" != "gtsteffaniak/filebrowser" ]]; then
+            echo "::error::Expected a fork of gtsteffaniak/filebrowser, found $upstream"
+            exit 1
+          fi
+
+          before=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          # GitHub merges into the fork, preserving its commits. Conflicts fail
+          # this step; there is no reset or force push.
+          gh api --method POST "repos/$GITHUB_REPOSITORY/merge-upstream" -f branch=main
+          after=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+
+          if [[ "$before" != "$after" ]]; then
+            # GITHUB_TOKEN changes do not trigger push workflows, but an explicit
+            # workflow_dispatch does. No personal access token is needed.
+            gh workflow run publish-ghcr.yaml --repo "$GITHUB_REPOSITORY" --ref main
+            echo "Merged upstream into main and requested a GHCR build." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "main already contains upstream; no build needed." >> "$GITHUB_STEP_SUMMARY"
+          fi

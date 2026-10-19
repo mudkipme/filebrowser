@@ -2855,7 +2855,7 @@ const docTemplate = `{
         },
         "/api/resources/unarchive": {
             "post": {
-                "description": "Extracts a zip or tar.gz archive on the server into the given destination directory. Server-side only; no extracted bytes are returned. Supports extracting to a different source via toSource. Requires create permission. Archive size is checked against server.maxArchiveSizeGB limit if configured.\n\n**Request body parameters:**\n- **fromSource** (string, required): Source name where the archive file lives. Example: ` + "`" + `\"default\"` + "`" + `\n- **toSource** (string, optional): Source name where contents will be extracted. Defaults to fromSource if omitted. Example: ` + "`" + `\"restored\"` + "`" + `\n- **path** (string, required): Path to the archive file (on fromSource). Must be .zip, .tar.gz, or .tgz. Example: ` + "`" + `\"/downloads/data.zip\"` + "`" + `\n- **destination** (string, required): Directory path (on toSource) to extract into. Example: ` + "`" + `\"/projects/imported\"` + "`" + `\n- **deleteAfter** (boolean, optional): If true, delete the archive file after successful extraction. Default: false. Example: ` + "`" + `true` + "`" + `\n- **filenameEncoding** (string, optional): Fallback ZIP filename encoding: utf-8, cp932, gb18030, big5, euc-kr, cp437, windows-1252. Unicode metadata takes precedence. Omit to use a suggestion; ambiguous encodings require a selection.\n- **preview** (boolean, optional): Return ZIP encoding candidates and sample filenames without extracting or deleting anything. Requires the same source/destination permissions as extraction.",
+                "description": "Extracts a zip, tar.gz, 7z, or rar archive on the server into the given destination directory. Server-side only; no extracted bytes are returned. Supports extracting to a different source via toSource. Requires create permission. Archive size is checked against server.maxArchiveSizeGB limit if configured. Split volumes and links in 7z/RAR archives are unsupported.\n\n**Request body parameters:**\n- **fromSource** (string, required): Source name where the archive file lives. Example: ` + "`" + `\"default\"` + "`" + `\n- **toSource** (string, optional): Source name where contents will be extracted. Defaults to fromSource if omitted. Example: ` + "`" + `\"restored\"` + "`" + `\n- **path** (string, required): Path to the archive file (on fromSource). Must be .zip, .tar.gz, .tgz, .7z, or .rar. Example: ` + "`" + `\"/downloads/data.zip\"` + "`" + `\n- **destination** (string, required): Directory path (on toSource) to extract into. Example: ` + "`" + `\"/projects/imported\"` + "`" + `\n- **deleteAfter** (boolean, optional): If true, delete the archive file after successful extraction. Default: false. Example: ` + "`" + `true` + "`" + `\n- **filenameEncoding** (string, optional): Fallback ZIP filename encoding: utf-8, cp932, gb18030, big5, euc-kr, cp437, windows-1252. Unicode metadata takes precedence. Omit to use a suggestion; ambiguous encodings require a selection.\n- **preview** (boolean, optional): Return ZIP encoding candidates and sample filenames without extracting or deleting anything. Requires the same source/destination permissions as extraction.\n- **password** (string, optional): Password for an encrypted ZIP (ZipCrypto or WinZip AES), 7z, or RAR archive.",
                 "consumes": [
                     "application/json"
                 ],
@@ -8854,8 +8854,12 @@ const docTemplate = `{
                     "description": "Source name where the archive file lives (required). Example: \"default\"",
                     "type": "string"
                 },
+                "password": {
+                    "description": "Password for encrypted ZIP/7z/RAR archives. Never persisted.",
+                    "type": "string"
+                },
                 "path": {
-                    "description": "Path to the archive file on fromSource; .zip, .tar.gz, or .tgz (required). Example: \"/downloads/data.zip\"",
+                    "description": "Path to the archive file on fromSource; .zip, .tar.gz, .tgz, .7z, or .rar (required). Example: \"/downloads/data.zip\"",
                     "type": "string"
                 },
                 "preview": {

@@ -52,6 +52,10 @@
             <p v-else-if="!encodingCandidates.length" role="alert">{{ $t("prompts.zipEncodingUnavailable") }}</p>
           </template>
         </section>
+        <div v-if="supportsPassword" class="unarchive-options">
+          <label for="archive-password" class="prompts-label">{{ $t("prompts.optionalPassword") }}</label>
+          <input id="archive-password" v-model="password" class="input" type="password" autocomplete="off" />
+        </div>
         <div class="unarchive-options settings-items">
           <ToggleSwitch class="item" v-model="deleteAfter"
             :name="$t('profileSettings.deleteAfterArchive')"
@@ -179,6 +183,7 @@ export default {
       encodingError: false,
       encodingCandidates: [],
       filenameEncoding: "",
+      password: "",
       suggestedEncoding: "",
       showFileList: false,
       showNewDirInput: false,
@@ -205,6 +210,9 @@ export default {
   computed: {
     isZip() {
       return (this.itemPath || "").toLowerCase().endsWith(".zip");
+    },
+    supportsPassword() {
+      return /\.(zip|7z|rar)$/i.test(this.itemPath || "");
     },
     encodingReady() {
       return !this.isZip || (!this.encodingLoading && !this.encodingError && !!this.filenameEncoding);
@@ -235,8 +243,7 @@ export default {
       const name = this.item?.name || "";
       const lower = name.toLowerCase();
       if (lower.endsWith(".tar.gz")) return name.slice(0, -7);
-      if (lower.endsWith(".tgz")) return name.slice(0, -4);
-      if (lower.endsWith(".zip")) return name.slice(0, -4);
+      if (/\.(tgz|zip|7z|rar)$/.test(lower)) return name.slice(0, name.lastIndexOf("."));
       return name;
     },
   },
@@ -340,6 +347,7 @@ export default {
           destination: this.destPath,
           deleteAfter: this.deleteAfter,
           ...(this.isZip && { filenameEncoding: this.filenameEncoding }),
+          ...(this.supportsPassword && this.password && { password: this.password }),
         });
         mutations.setReload(true);
         mutations.closeTopPrompt();

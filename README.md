@@ -30,6 +30,10 @@ The goal for this repo is to become the best open-source self-hosted file browsi
 
 Ready to try it out? See [Getting Started Docs](https://filebrowserquantum.com/en/docs/getting-started/).
 
+Archive extraction supports ZIP, tar.gz/tgz, 7z, and RAR, including password-protected ZIP (ZipCrypto and WinZip AES), 7z, and RAR files. Select an archive and choose Extract to pick a destination. Extraction requires no external archive tools. Split volumes and links inside 7z/RAR archives are unsupported. Archive creation supports ZIP and tar.gz.
+
+This fork automatically merges `gtsteffaniak/filebrowser` into `main` daily at 03:23 UTC and publishes `ghcr.io/mudkipme/filebrowser:latest` whenever `main` changes, including upstream syncs. The image supports amd64 and arm64. Both workflows can also be run manually in GitHub Actions and use `GITHUB_TOKEN`; no custom secrets are needed. Merge conflicts stop syncing for manual resolution. Enable Actions and the scheduled **Sync upstream** workflow in the fork after pushing these workflows. To allow anonymous image pulls, set the GHCR package visibility to public after its first publication.
+
 ## How its different
 
 FileBrowser Quantum is a massive fork of the file browser open-source project with the following changes:

@@ -63,6 +63,20 @@ describe("ZIP filename selection", () => {
     await nextTick();
     expect(extract.disabled).toBe(false);
   });
+  it("sends a ZIP password alongside the selected filename encoding", async () => {
+    unarchive.mockResolvedValueOnce({ suggested: "cp932", candidates });
+    const extract = mount();
+    await vi.waitFor(() => expect(extract.disabled).toBe(false));
+    const password = root.querySelector('input[type="password"]');
+    password.value = " zip password ";
+    password.dispatchEvent(new Event("input"));
+    await nextTick();
+    unarchive.mockResolvedValueOnce({});
+    extract.click();
+    await vi.waitFor(() => expect(unarchive).toHaveBeenCalledTimes(2));
+    expect(unarchive.mock.calls[1][0]).toMatchObject({ password: " zip password ", filenameEncoding: "cp932" });
+    expect(unarchive.mock.calls[0][0]).not.toHaveProperty("password");
+  });
   it("blocks extraction on preview failure and allows retry", async () => {
     unarchive.mockRejectedValueOnce(new Error("unavailable"));
     const extract = mount();
