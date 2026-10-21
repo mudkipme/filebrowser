@@ -19,7 +19,7 @@ import (
 
 // Use file readers rather than filename-based openers so decoders cannot open
 // additional volumes outside the source path authorized by unarchiveHandler.
-func extractSevenZip(ctx context.Context, archivePath, destDir, password string) error {
+func extractSevenZip(ctx context.Context, archivePath, destDir, password string, policy *extractAccessPolicy) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -38,7 +38,15 @@ func extractSevenZip(ctx context.Context, archivePath, destDir, password string)
 		return err
 	}
 	defer root.Close()
-	dest := archiveDestination{root: root}
+	dest := archiveDestination{root: root, policy: policy}
+	for _, entry := range r.File {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := dest.preflight(entry.Name, entry.Mode()); err != nil {
+			return err
+		}
+	}
 	// Preserve archive order and close each entry before opening the next so
 	// sevenzip can reuse the decompressor for solid archives.
 	for _, entry := range r.File {
@@ -73,7 +81,7 @@ func extractSevenZip(ctx context.Context, archivePath, destDir, password string)
 	return dest.finish()
 }
 
-func extractRar(ctx context.Context, archivePath, destDir, password string) error {
+func extractRar(ctx context.Context, archivePath, destDir, password string, policy *extractAccessPolicy) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -88,7 +96,36 @@ func extractRar(ctx context.Context, archivePath, destDir, password string) erro
 		return err
 	}
 	defer root.Close()
-	dest := archiveDestination{root: root}
+	dest := archiveDestination{root: root, policy: policy}
+	if policy != nil {
+		// RAR headers are sequential. Check every entry before writing, then
+		// rewind the authorized file instead of reopening its path.
+		for {
+			if err = ctx.Err(); err != nil {
+				return err
+			}
+			entry, nextErr := r.Next()
+			if nextErr == io.EOF {
+				break
+			}
+			if nextErr != nil {
+				return nextErr
+			}
+			if entry.LinkType != rardecode.LinkTypeNone {
+				return fmt.Errorf("unsupported RAR link: %q", entry.Name)
+			}
+			if err = dest.preflight(entry.Name, entry.Mode()); err != nil {
+				return err
+			}
+		}
+		if _, err = f.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		r, err = rardecode.NewReader(f, rardecode.Password(password))
+		if err != nil {
+			return err
+		}
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -116,8 +153,20 @@ type archivedDirectory struct {
 }
 
 type archiveDestination struct {
-	root *os.Root
-	dirs []archivedDirectory
+	root   *os.Root
+	policy *extractAccessPolicy
+	dirs   []archivedDirectory
+}
+
+func (d *archiveDestination) preflight(name string, mode fs.FileMode) error {
+	destPath, err := safeExtractPath(d.root.Name(), name)
+	if err != nil {
+		return err
+	}
+	if !mode.IsDir() && !mode.IsRegular() {
+		return fmt.Errorf("unsupported archive entry type: %q", name)
+	}
+	return preflightExtractEntry(d.policy, name, destPath, mode.IsDir(), false)
 }
 
 // Root confines writes even when the destination contains existing symlinks.
