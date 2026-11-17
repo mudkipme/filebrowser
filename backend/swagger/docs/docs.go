@@ -4344,6 +4344,12 @@ const docTemplate = `{
                         "description": "Extract audio/video metadata if true",
                         "name": "metadata",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional checksum algorithm (md5, sha1, sha256, sha512); requires a logged-in session",
+                        "name": "checksum",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -4351,6 +4357,15 @@ const docTemplate = `{
                         "description": "File or directory metadata",
                         "schema": {
                             "$ref": "#/definitions/iteminfo.FileInfo"
+                        }
+                    },
+                    "401": {
+                        "description": "Login required for checksum generation",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
                         }
                     },
                     "403": {
@@ -6013,6 +6028,14 @@ const docTemplate = `{
                     "description": "socket to listen on - eg. /var/run/filebrowser.sock",
                     "type": "string"
                 },
+                "socketFileMode": {
+                    "description": "octal mode for filesystem http.socket (default \"0660\"); ignored for abstract sockets",
+                    "type": "string"
+                },
+                "socketGroup": {
+                    "description": "optional group name or numeric gid for the socket file (filesystem sockets only)",
+                    "type": "string"
+                },
                 "tlsCert": {
                     "description": "path to TLS cert",
                     "type": "string"
@@ -6024,6 +6047,30 @@ const docTemplate = `{
                 "trustProxyHeaders": {
                     "description": "honor X-Forwarded-* and X-Real-IP from a reverse proxy (default: false)",
                     "type": "boolean"
+                },
+                "trustedProxies": {
+                    "description": "IPs/CIDRs of trusted proxies; forwarded client headers are only honored when the socket peer matches one of these (default: empty = forwarded headers ignored)",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "unixSocketTrustAllLocalPeers": {
+                    "description": "default false: set true to trust forwarded headers from any local filesystem socket peer when allowlists are empty",
+                    "type": "boolean"
+                },
+                "unixSocketTrustedGIDs": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "unixSocketTrustedUIDs": {
+                    "description": "UnixSocketTrustedUIDs and UnixSocketTrustedGIDs list peer credentials (Linux SO_PEERCRED) allowed to\npresent X-Forwarded-* on a filesystem http.socket listener. When both are empty, peers are not trusted\nunless UnixSocketTrustAllLocalPeers is true (legacy; startup logs a warning). A GID allowlist trusts\nevery peer with that GID, not only a single reverse-proxy process. Abstract sockets (@name) never trust\nforwarded headers.",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 }
             }
         },
@@ -6175,7 +6222,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "userPassword": {
-                    "description": "Bind password for service account",
+                    "description": "secret: bind password for the LDAP service account",
                     "type": "string"
                 }
             }
@@ -6488,7 +6535,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "secret": {
-                    "description": "v2 secret key",
+                    "description": "secret: v2 secret key",
                     "type": "string"
                 }
             }
@@ -6506,6 +6553,10 @@ const docTemplate = `{
                 "cacheDirCleanup": {
                     "description": "whether to automatically cleanup the cache directory. Note: docker must also mount a persistent volume to persist the cache (default: false)",
                     "type": "boolean"
+                },
+                "cacheDirMaxSizeMB": {
+                    "description": "maximum size in MB of the preview cache (cacheDir/diskcache). Past it, the least recently used files are deleted. 0 means no limit (default: 0)",
+                    "type": "integer"
                 },
                 "database": {
                     "description": "SQLite database configuration",
@@ -7635,6 +7686,10 @@ const docTemplate = `{
                     "description": "for backward compatibility",
                     "type": "string"
                 },
+                "minimal": {
+                    "description": "Minimal distinguishes owner-inheriting tokens from customized caps. Nil means legacy (infer from stored permissions).",
+                    "type": "boolean"
+                },
                 "name": {
                     "type": "string"
                 },
@@ -7678,6 +7733,10 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "uploadChunkSizeMb": {
+                    "type": "integer"
+                },
+                "uploadStallTimeoutSeconds": {
+                    "description": "seconds without progress before an upload is paused, 0 uses the default (10)",
                     "type": "integer"
                 }
             }

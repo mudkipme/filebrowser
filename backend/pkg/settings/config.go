@@ -113,7 +113,22 @@ func warnHttpProxyConfig() {
 		return
 	}
 	if Config.Http.BaseURL != "/" && !Config.Http.TrustProxyHeaders {
-		logger.Warning(`http.baseURL is not "/" but http.trustProxyHeaders is false. Behind a reverse proxy on a subpath, set trustProxyHeaders: true so cookies, client IP, OIDC redirects, and URLs resolve correctly. See https://filebrowserquantum.com/en/docs/configuration/http/#trustproxyheaders`)
+		logger.Warning(`http.baseURL is not "/" but http.trustProxyHeaders is false. Behind a reverse proxy on a subpath, set trustProxyHeaders: true so cookies, OIDC redirects, and URLs resolve correctly, and list the proxy addresses in http.trustedProxies so the client IP resolves too. See https://filebrowserquantum.com/en/docs/configuration/http/#trustproxyheaders`)
+	}
+	if len(Config.Http.TrustedProxies) > 0 && !Config.Http.TrustProxyHeaders {
+		logger.Warning("http.trustedProxies is set but http.trustProxyHeaders is false; trusted proxy entries are ignored until trustProxyHeaders is enabled")
+	}
+	// Check the parsed list: blank entries are accepted by validation but yield no prefixes.
+	if Config.Http.TrustProxyHeaders && len(TrustedProxyPrefixes()) == 0 && Config.Http.Socket == "" {
+		logger.Warning("http.trustProxyHeaders is true but http.trustedProxies is empty; X-Forwarded-For and X-Real-IP are ignored, so client IPs (rate limits, activity logs) resolve to the proxy address. Add your reverse proxy addresses to http.trustedProxies.")
+	}
+	if Config.Http.TrustProxyHeaders && Config.Http.Socket != "" && !strings.HasPrefix(Config.Http.Socket, "@") &&
+		len(Config.Http.UnixSocketTrustedUIDs) == 0 && len(Config.Http.UnixSocketTrustedGIDs) == 0 {
+		if Config.Http.UnixSocketTrustAllLocalPeers {
+			logger.Warning("http.unixSocketTrustAllLocalPeers is true: any local process that can connect to the filesystem socket may present X-Forwarded-For and X-Real-IP. Prefer http.unixSocketTrustedUIDs and/or http.unixSocketTrustedGIDs so only peers with allowed Linux credentials can set forwarded headers.")
+		} else {
+			logger.Warning("http.trustProxyHeaders is true on a filesystem Unix socket, but http.unixSocketTrustedUIDs and http.unixSocketTrustedGIDs are empty; forwarded client headers from socket peers are ignored. List allowed peer UIDs and/or GIDs (Linux SO_PEERCRED), or set http.unixSocketTrustAllLocalPeers: true only if you accept legacy trust-all behavior.")
+		}
 	}
 	if !Env.IsDevMode {
 		if u := Config.Http.ExternalUrl; u != "" && strings.HasPrefix(strings.ToLower(u), "http://") {
@@ -381,7 +396,6 @@ func setupMedia(generate bool) {
 func isGoTest() bool {
 	return flag.Lookup("test.v") != nil
 }
-
 
 func setupFFmpegIntegration() {
 	n := Config.Server.NumImageProcessors
@@ -980,9 +994,10 @@ func SetDefaults(generate bool) Settings {
 				Locale:      "en",
 			},
 			FileLoading: users.FileLoading{
-				MaxConcurrent:     10,
-				UploadChunkSize:   10, // 10MB
-				DownloadChunkSize: 0,  // 0MB, default to no chunking
+				MaxConcurrent:             10,
+				UploadChunkSize:           10, // 10MB
+				DownloadChunkSize:         0,  // 0MB, default to no chunking
+				UploadStallTimeoutSeconds: 10, // pause an upload after 10 seconds without progress
 			},
 			Account: UserDefaultsAccount{
 				Permissions: UserDefaultsAccountPermissions{

@@ -105,6 +105,8 @@ type AuthToken struct {
 	BelongsTo   uint64      `json:"belongsTo,omitempty"` // legacy stored metadata only, never trusted for auth; identity is always the hashed_tokens lookup
 	IssuedAt    int64       `json:"issuedAt,omitempty"`
 	ExpiresAt   int64       `json:"expiresAt,omitempty"`
+	// Minimal distinguishes owner-inheriting tokens from customized caps. Nil means legacy (infer from stored permissions).
+	Minimal     *bool       `json:"minimal,omitempty"`
 	Permissions Permissions `json:"Permissions,omitempty"`
 }
 
@@ -341,10 +343,11 @@ type NonAdminEditable struct {
 }
 
 type FileLoading struct {
-	MaxConcurrent     int  `json:"maxConcurrentUpload"`
-	UploadChunkSize   int  `json:"uploadChunkSizeMb"`
-	ClearAll          bool `json:"clearAll"`
-	DownloadChunkSize int  `json:"downloadChunkSizeMb"`
+	MaxConcurrent             int  `json:"maxConcurrentUpload"`
+	UploadChunkSize           int  `json:"uploadChunkSizeMb"`
+	ClearAll                  bool `json:"clearAll"`
+	DownloadChunkSize         int  `json:"downloadChunkSizeMb"`
+	UploadStallTimeoutSeconds int  `json:"uploadStallTimeoutSeconds"` // seconds without progress before an upload is paused, 0 uses the default (10)
 }
 
 // SidebarLink represents a customizable link in the sidebar.

@@ -16,6 +16,7 @@ import (
 	"github.com/gtsteffaniak/filebrowser/backend/internal/activity"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/adapters/fs/files"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/adapters/fs/fileutils"
+	"github.com/gtsteffaniak/filebrowser/backend/internal/database/access"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/database/users"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/errors"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/preview"
@@ -209,7 +210,9 @@ func resourceGetHandler(w http.ResponseWriter, r *http.Request, d *Context) (int
 // @Param path query string false "Path within the share to retrieve information for. Defaults to share root."
 // @Param content query string false "Include file content if true"
 // @Param metadata query string false "Extract audio/video metadata if true"
+// @Param checksum query string false "Optional checksum algorithm (md5, sha1, sha256, sha512); requires a logged-in session"
 // @Success 200 {object} iteminfo.FileInfo "File or directory metadata"
+// @Failure 401 {object} map[string]string "Login required for checksum generation"
 // @Failure 403 {object} map[string]string "Share unavailable or access denied"
 // @Failure 404 {object} map[string]string "Share not found or file not found"
 // @Failure 500 {object} map[string]string "Internal server error"
@@ -218,6 +221,24 @@ func resourceGetHandler(w http.ResponseWriter, r *http.Request, d *Context) (int
 func publicGetResourceHandler(w http.ResponseWriter, r *http.Request, d *Context) (int, error) {
 	if d.Share.ShareType == "upload" {
 		return http.StatusNotImplemented, fmt.Errorf("browsing is disabled for upload shares")
+	}
+	if algo := r.URL.Query().Get("checksum"); algo != "" {
+		if d.User == nil || d.User.Username == "" || d.User.Username == "anonymous" {
+			return http.StatusUnauthorized, fmt.Errorf("login required to generate checksums")
+		}
+		if d.FileInfo.Type == "directory" {
+			return http.StatusBadRequest, fmt.Errorf("checksum is only supported for files")
+		}
+		if d.Share.DisableFileViewer {
+			return http.StatusForbidden, fmt.Errorf("file viewing is disabled for this share")
+		}
+		checksum, err := utils.GetChecksum(d.FileInfo.RealPath, algo)
+		if err == errors.ErrInvalidOption {
+			return http.StatusBadRequest, nil
+		} else if err != nil {
+			return http.StatusInternalServerError, err
+		}
+		d.FileInfo.Checksums = map[string]string{algo: checksum}
 	}
 	return RenderJSON(w, r, d.FileInfo)
 }
@@ -279,27 +300,16 @@ func resourceDeleteHandler(w http.ResponseWriter, r *http.Request, d *Context) (
 	// delete thumbnails
 	preview.DelThumbs(r.Context(), *fileInfo)
 
-	principal := quota.PrincipalForUpload(d.User, d.Share.UserID, d.Share.Hash)
-	sourceInfo, ok := settings.Config.Server.NameToSource[source]
-	if !ok {
+	if _, ok := settings.Config.Server.NameToSource[source]; !ok {
 		return http.StatusNotFound, fmt.Errorf("source %s not found", source)
 	}
-	var deleteBytes int64
-	if fileInfo.Type == "directory" {
-		deleteBytes, _ = state.IndexedPathBytes(source, fileInfo.Path, true)
-	} else {
-		deleteBytes = fileInfo.Size
-	}
 
+	adjustments := prepareDeleteQuotaAdjustments(d, source, fullIndexPath, fileInfo)
 	err = files.DeleteFiles(source, userScope, fullIndexPath, fileInfo.Type == "directory")
 	if err != nil {
 		return ErrToStatus(err), err
 	}
-	if deleteBytes > 0 {
-		if adjErr := state.ApplyAccountedUsageDelta(principal, source, sourceInfo.Path, fileInfo.Path, d.Share.Hash, -deleteBytes); adjErr != nil {
-			logger.Warningf("quota adjust after delete failed: %v", adjErr)
-		}
-	}
+	applyDeleteQuotaAdjustments(adjustments)
 	activity.RecordDelete(r, toActor(d), source, path)
 	return http.StatusOK, nil
 
@@ -326,11 +336,14 @@ func publicDeleteHandler(w http.ResponseWriter, r *http.Request, d *Context) (in
 	shareRelPath := strings.TrimPrefix(d.Share.Path, userScope)
 	fullIndexPath := utils.JoinScopedIndexPath(userScope, d.IndexPath)
 	boundIndexPath := utils.JoinScopedIndexPath(userScope, shareRelPath)
+	sourceName := d.Share.GetSourceName()
+	adjustments := prepareDeleteQuotaAdjustments(d, sourceName, fullIndexPath, fileInfo)
 	err = files.DeleteFiles(d.Share.SourcePath, boundIndexPath, fullIndexPath, fileInfo.Type == "directory")
 	if err != nil {
 		logger.Errorf("public delete handler: error deleting resource with error %v", err)
 		return http.StatusInternalServerError, fmt.Errorf("an error occured while deleting the resource")
 	}
+	applyDeleteQuotaAdjustments(adjustments)
 	preview.DelThumbs(r.Context(), *fileInfo)
 	activity.RecordDelete(r, toActor(d), d.Share.GetSourceName(), fileInfo.Path)
 	return http.StatusOK, nil
@@ -497,7 +510,7 @@ func ResourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *Contex
 			boundIndexPath := utils.JoinScopedIndexPath(userScope, withoutUserScope)
 			fullIndexPath := utils.JoinScopedIndexPath(userScope, indexPath)
 
-			// Delete the file/directory
+			adjustments := prepareDeleteQuotaAdjustments(d, sourceName, fullIndexPath, fileInfo)
 			err = files.DeleteFiles(sourceName, boundIndexPath, fullIndexPath, fileInfo.Type == "directory")
 			if err != nil {
 				logger.Errorf("resource bulk delete handler: error deleting file/directory: %v", err)
@@ -508,6 +521,7 @@ func ResourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *Contex
 				})
 				continue
 			}
+			applyDeleteQuotaAdjustments(adjustments)
 			// Delete thumbnails
 			preview.DelThumbs(r.Context(), *fileInfo)
 			activityPath = fileInfo.Path
@@ -577,6 +591,7 @@ func ResourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *Contex
 				continue
 			}
 			fullIndexPath := utils.JoinScopedIndexPath(userScope, sanitizedPath)
+			adjustments := prepareDeleteQuotaAdjustments(d, item.Source, fullIndexPath, fileInfo)
 			err = files.DeleteFiles(item.Source, userScope, fullIndexPath, fileInfo.Type == "directory")
 			if err != nil {
 				response.Failed = append(response.Failed, BulkDeleteItem{
@@ -586,6 +601,7 @@ func ResourceBulkDeleteHandler(w http.ResponseWriter, r *http.Request, d *Contex
 				})
 				continue
 			}
+			applyDeleteQuotaAdjustments(adjustments)
 			preview.DelThumbs(r.Context(), *fileInfo)
 		}
 		// Success — echo the client path in the response
@@ -796,6 +812,9 @@ func ResourcePostHandler(w http.ResponseWriter, r *http.Request, d *Context) (in
 	}
 
 	if !state.AccessPermitted(idx.Path, utils.IndexPathFromNormalized(fullIndexPath, true), filePermUser.Username) {
+		return http.StatusForbidden, fmt.Errorf("access denied to path %s", path)
+	}
+	if !state.AccessPermittedAtRealPath(idx, filePermUser.Username, realPath, access.IsDirAtRealPath(realPath)) {
 		return http.StatusForbidden, fmt.Errorf("access denied to path %s", path)
 	}
 
@@ -1534,6 +1553,15 @@ func ResourcePatchHandler(w http.ResponseWriter, r *http.Request, d *Context) (i
 			response.Failed = append(response.Failed, moveCopyWithClientPaths(item, clientFromPath, clientToPath))
 			continue
 		}
+		if !state.AccessPermittedAtRealPath(srcIdx, d.User.Username, realSrc, isSrcDir) {
+			item.Message = "access denied to source path"
+			if d.Share.Hash != "" {
+				response.Failed = append(response.Failed, MoveCopyItem{Message: item.Message})
+				continue
+			}
+			response.Failed = append(response.Failed, moveCopyWithClientPaths(item, clientFromPath, clientToPath))
+			continue
+		}
 
 		// Resolve the destination: copy must reject escaping symlink leaves; move/rename
 		// must replace an existing symlink entry without following it.
@@ -1554,10 +1582,28 @@ func ResourcePatchHandler(w http.ResponseWriter, r *http.Request, d *Context) (i
 			response.Failed = append(response.Failed, moveCopyWithClientPaths(item, clientFromPath, clientToPath))
 			continue
 		}
+		if !state.AccessPermittedAtRealPath(dstIdx, d.User.Username, realDest, access.IsDirAtRealPath(realDest)) {
+			item.Message = "access denied to destination path"
+			if d.Share.Hash != "" {
+				response.Failed = append(response.Failed, MoveCopyItem{Message: item.Message})
+				continue
+			}
+			response.Failed = append(response.Failed, moveCopyWithClientPaths(item, clientFromPath, clientToPath))
+			continue
+		}
 
 		// Auto-rename if requested
 		if req.Rename {
 			realDest = addVersionSuffix(realDest)
+			if !state.AccessPermittedAtRealPath(dstIdx, d.User.Username, realDest, isSrcDir) {
+				item.Message = "access denied to destination path"
+				if d.Share.Hash != "" {
+					response.Failed = append(response.Failed, MoveCopyItem{Message: item.Message})
+					continue
+				}
+				response.Failed = append(response.Failed, moveCopyWithClientPaths(item, clientFromPath, clientToPath))
+				continue
+			}
 		}
 
 		// Validate move/rename operation to prevent circular references

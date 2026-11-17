@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gtsteffaniak/filebrowser/backend/internal/adapters/fs/fileutils"
@@ -23,8 +24,9 @@ import (
 )
 
 var (
-	RealPathCache = cache.NewCache[string](48*time.Hour, 72*time.Hour)
-	IsDirCache    = cache.NewCache[bool](48*time.Hour, 72*time.Hour)
+	RealPathCache      = cache.NewCache[string](48*time.Hour, 72*time.Hour)
+	IsDirCache         = cache.NewCache[bool](48*time.Hour, 72*time.Hour)
+	realPathGeneration atomic.Uint64
 )
 
 // getDiskUsage returns the actual disk space used by a file in bytes
@@ -119,6 +121,7 @@ type Index struct {
 	previousNumFiles  uint64              // Track previous NumFiles to use when scan in progress (computed value is 0)
 	scanners          map[string]*Scanner // path -> scanner
 	mock              bool
+	bgWork            pathCoalescer // per-path background persistence and refreshes
 	mu                sync.RWMutex
 	activeScannerPath string
 	schedulerStop     chan struct{}
@@ -137,6 +140,9 @@ type Index struct {
 	// Adaptive scheduler: shared slot map (UTC unix seconds -> scanners).
 	scheduleSlotsMu sync.Mutex
 	scheduleSlots   map[int64][]*Scanner
+	// startupScanPending requests one bounded serial scan pass on startup when the
+	// persisted folder-size map could not be restored (quick scans would be blind).
+	startupScanPending bool
 }
 
 var (
@@ -640,8 +646,25 @@ func (idx *Index) getDirInfoFromContext(ctx *PathContext, isViewable, isIndexabl
 	if err != nil {
 		return nil, err
 	}
-	idx.persistDirectoryListing(ctx.IndexPath, indexableInfo, opts)
+	// Persist index rows and folder sizes in the background so API listing
+	// latency stays independent of index DB write throughput. Coalesced per path so a slow
+	// DB cannot accumulate one goroutine per request.
+	indexPath := ctx.IndexPath
+	idx.bgWork.submit("persist|"+indexPath, func() {
+		idx.persistDirectoryListing(indexPath, indexableInfo, opts)
+	})
 	return dirFileInfo, nil
+}
+
+// RefreshDirectoryAsync runs RefreshDirectory(indexPath, false) in the background, coalesced
+// per path: while a refresh for indexPath runs, further requests queue at most one more
+// refresh instead of starting parallel directory reads and index DB writes.
+func (idx *Index) RefreshDirectoryAsync(indexPath string) {
+	idx.bgWork.submit("refresh|"+indexPath, func() {
+		if err := idx.RefreshDirectory(indexPath, false); err != nil {
+			logger.Debugf("Failed to refresh directory for folder size update: %v", err)
+		}
+	})
 }
 
 // persistDirectoryListing updates index rows and the in-memory folder size from
@@ -653,12 +676,7 @@ func (idx *Index) persistDirectoryListing(indexPath string, indexableInfo *itemi
 		return
 	}
 	idx.UpdateMetadata(indexableInfo, nil, true)
-	newSize := uint64(indexableInfo.Size)
-	if previousSize, exists := idx.GetFolderSize(indexPath); exists {
-		idx.updateFolderSizeAndParents(indexPath, newSize, previousSize, true)
-	} else {
-		idx.SetFolderSize(indexPath, newSize)
-	}
+	idx.updateFolderSizeDelta(indexPath, uint64(indexableInfo.Size))
 }
 
 // getBasicDirInfo returns just directory metadata without children
@@ -710,8 +728,14 @@ func (idx *Index) indexDirectory(indexPath string, opts Options, scanner *Scanne
 	idx.UpdateMetadata(dirFileInfo, scanner, !opts.Recursive)
 
 	// Always store the calculated directory size in the in-memory map
-	// This ensures parent directories are updated after copy/move operations
-	idx.SetFolderSize(indexPath, uint64(dirFileInfo.Size))
+	// This ensures parent directories are updated after copy/move operations.
+	// API-driven refreshes (no scanner) also propagate the delta to ancestors so
+	// parent folder sizes reflect changes below the refreshed directory.
+	if scanner == nil {
+		idx.updateFolderSizeDelta(indexPath, uint64(dirFileInfo.Size))
+	} else {
+		idx.SetFolderSize(indexPath, uint64(dirFileInfo.Size))
+	}
 
 	return dirFileInfo.Size, dirFileInfo.HasPreview, nil
 }
@@ -1199,6 +1223,7 @@ func (idx *Index) getRealPathInternal(boundIndexPath string, enforceScope bool, 
 	if ok && cached != "" {
 		return cached, isDir, nil
 	}
+	generation := realPathGeneration.Load()
 	absolutePath, err := filepath.Abs(joinedPath)
 	if err != nil {
 		return absolutePath, false, fmt.Errorf("could not get real path: %v, %s", joinedPath, err)
@@ -1216,7 +1241,75 @@ func (idx *Index) getRealPathInternal(boundIndexPath string, enforceScope bool, 
 	}
 	RealPathCache.Set(cacheKey, realPath)
 	IsDirCache.Set(cacheKey+":isdir", isDir)
+	if realPathGeneration.Load() != generation {
+		RealPathCache.Delete(cacheKey)
+		IsDirCache.Delete(cacheKey + ":isdir")
+	}
 	return realPath, isDir, nil
+}
+
+// realPathCacheJoinedPath builds the filesystem join used in RealPathCache keys.
+func realPathCacheJoinedPath(sourceRoot, indexPath string) string {
+	seg := utils.CleanIndexPathSegment(indexPath)
+	if seg == "" {
+		return sourceRoot
+	}
+	return filepath.Join(sourceRoot, seg)
+}
+
+func realPathCacheIndexAncestors(indexPath string) []string {
+	rel := utils.CleanIndexPathSegment(indexPath)
+	if rel == "" {
+		return []string{"/"}
+	}
+	parts := strings.Split(rel, "/")
+	ancestors := []string{"/"}
+	for i := range parts {
+		ancestors = append(ancestors, "/"+strings.Join(parts[:i+1], "/"))
+	}
+	return ancestors
+}
+
+// ClearRealPathCaches drops every cached symlink resolution. The cache library has no
+// prefix delete, so subtree invalidation uses a full clear; entries repopulate lazily.
+func ClearRealPathCaches() {
+	realPathGeneration.Add(1)
+	RealPathCache.ClearAll()
+	IsDirCache.ClearAll()
+}
+
+// InvalidateRealPathCache drops cached symlink resolutions for indexPath and its
+// ancestors. scopeBounds should include any caller scope prefixes used with
+// GetRealPathScoped (e.g. user or share path).
+func (idx *Index) InvalidateRealPathCache(indexPath string, scopeBounds ...string) {
+	realPathGeneration.Add(1)
+	boundSet := map[string]struct{}{"/": {}, "": {}}
+	for _, b := range scopeBounds {
+		b = strings.TrimRight(strings.TrimSpace(b), "/")
+		if b == "" || b == "/" {
+			boundSet["/"] = struct{}{}
+			boundSet[""] = struct{}{}
+			continue
+		}
+		if !strings.HasPrefix(b, "/") {
+			b = "/" + b
+		}
+		boundSet[b] = struct{}{}
+	}
+	bounds := make([]string, 0, len(boundSet))
+	for b := range boundSet {
+		bounds = append(bounds, b)
+	}
+	for _, ip := range realPathCacheIndexAncestors(indexPath) {
+		joined := realPathCacheJoinedPath(idx.Path, ip)
+		for _, enforceScope := range []bool{false, true} {
+			for _, bound := range bounds {
+				key := fmt.Sprintf("realpath|scoped=%t|bound=%q|path=%q", enforceScope, bound, joined)
+				RealPathCache.Delete(key)
+				IsDirCache.Delete(key + ":isdir")
+			}
+		}
+	}
 }
 
 // GetRealPathForMutation resolves an index path for a mutating filesystem
@@ -1363,8 +1456,29 @@ func (idx *Index) RefreshDirectory(indexPath string, recursive bool) error {
 	return err
 }
 
+// updateFolderSizeDelta atomically records a folder's newly computed size and
+// propagates the delta to all ancestors in the in-memory folderSizes map.
+func (idx *Index) updateFolderSizeDelta(indexPath string, newSize uint64) {
+	idx.folderSizesMu.Lock()
+	defer idx.folderSizesMu.Unlock()
+	previousSize, exists := idx.folderSizes[indexPath]
+	if !exists {
+		idx.folderSizes[indexPath] = newSize
+		idx.folderSizesUnsynced[indexPath] = struct{}{}
+		return
+	}
+	idx.updateFolderSizeAndParentsLocked(indexPath, newSize, previousSize, true)
+}
+
 // updateFolderSizeAndParents updates a folder size and propagates the change to all parents
 func (idx *Index) updateFolderSizeAndParents(path string, newSize uint64, previousSize uint64, updateTarget bool) {
+	idx.folderSizesMu.Lock()
+	defer idx.folderSizesMu.Unlock()
+	idx.updateFolderSizeAndParentsLocked(path, newSize, previousSize, updateTarget)
+}
+
+// updateFolderSizeAndParentsLocked is updateFolderSizeAndParents with folderSizesMu already held.
+func (idx *Index) updateFolderSizeAndParentsLocked(path string, newSize uint64, previousSize uint64, updateTarget bool) {
 	// Calculate the delta
 	var sizeDelta int64
 	if newSize >= previousSize {
@@ -1376,9 +1490,6 @@ func (idx *Index) updateFolderSizeAndParents(path string, newSize uint64, previo
 	if sizeDelta == 0 && !updateTarget {
 		return // No change, nothing to propagate
 	}
-
-	idx.folderSizesMu.Lock()
-	defer idx.folderSizesMu.Unlock()
 
 	// Optionally update the target folder itself
 	if updateTarget {
@@ -1549,7 +1660,10 @@ func setFilePreviewFlags(fileInfo *iteminfo.ItemInfo, realPath string) {
 	}
 	switch simpleType {
 	case "image":
-		if fileInfo.Size > iteminfo.LargeFileSizeThreshold {
+		// Camera RAW previews are the embedded JPEG, which is read without decoding the RAW data,
+		// so large RAW files (medium format, uncompressed) don't need the size limit.
+		isRaw := iteminfo.IsRawImage(strings.ToLower(filepath.Ext(fileInfo.Name)))
+		if fileInfo.Size > iteminfo.LargeFileSizeThreshold && !isRaw {
 			fileInfo.HasPreview = false
 			return
 		}

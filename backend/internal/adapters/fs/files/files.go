@@ -335,6 +335,15 @@ func fileInfoFasterImpl(opts utils.FileOptions, user *users.User, s *Service) (*
 		if info.Type == "directory" && opts.HideFileExt != "" {
 			response.Files = filterFilesByExt(response.Files, opts.HideFileExt)
 		}
+		if info.Type == "directory" && opts.Expand {
+			// Expanded listings without extended attrs skip persistDirectoryListing
+			// (their placeholder preview values must not overwrite index rows), so
+			// refresh the index lazily — otherwise folder sizes here never update.
+			// Capture indexPath now: the deferred finalizeResponse strips the user
+			// scope from response.Path before returning.
+			// Coalesced per path so repeated listings do not run parallel refreshes.
+			idx.RefreshDirectoryAsync(idx.MakeIndexPath(response.Path, true).String())
+		}
 		return response, nil
 	}
 	// Process directory metadata if requested
@@ -646,6 +655,7 @@ func DeleteFiles(source, boundIndexPath, indexPath string, isDir bool) error {
 	if utils.CleanIndexPathSegment(indexPath) == "" {
 		return fmt.Errorf("refusing to delete source root directory: %s", indexPath)
 	}
+	deleteIndexPath := indexPath
 	realPath, err := index.GetRealPathForRemoval(boundIndexPath, indexPath)
 	if err != nil {
 		return err
@@ -664,9 +674,13 @@ func DeleteFiles(source, boundIndexPath, indexPath string, isDir bool) error {
 		return err
 	}
 
-	// Clear cache entries
-	indexing.RealPathCache.Delete(realPath)
-	indexing.IsDirCache.Delete(realPath + ":isdir")
+	if isDir {
+		indexing.ClearRealPathCaches()
+	}
+	index.InvalidateRealPathCache(deleteIndexPath, boundIndexPath)
+	if parent := utils.GetParentDirectoryPath(deleteIndexPath); parent != "" && parent != "/" {
+		index.InvalidateRealPathCache(parent, boundIndexPath)
+	}
 
 	// Remove metadata from index
 	deleteSuccess := index.DeleteMetadata(indexPath, isDir, isDir)
@@ -718,8 +732,7 @@ func RefreshIndex(source string, path string, isDir bool, recursive bool) error 
 			if !Exists(realPath) {
 				// Directory no longer exists, remove it from the index
 				// This clears both Directories and DirectoriesLedger maps
-				indexing.RealPathCache.Delete(realPath)
-				indexing.IsDirCache.Delete(realPath + ":isdir")
+				idx.InvalidateRealPathCache(path)
 				idx.DeleteMetadata(path, true, false)
 				return nil
 			}
@@ -796,6 +809,9 @@ func moveResourceImpl(isSrcDir bool, sourceIndex, destIndex, realsrc, realdst st
 	err := fileutils.MoveFile(realsrc, realdst)
 	if err != nil {
 		return err
+	}
+	if isSrcDir {
+		indexing.ClearRealPathCaches()
 	}
 
 	// Handle SOURCE cleanup (treat as deletion)
@@ -957,6 +973,11 @@ func WriteDirectory(boundIndexPath string, opts utils.FileOptions) error {
 		}
 	}
 
+	idx.InvalidateRealPathCache(opts.Path, boundIndexPath)
+	if parent := utils.GetParentDirectoryPath(opts.Path); parent != "" && parent != "/" {
+		idx.InvalidateRealPathCache(parent, boundIndexPath)
+	}
+
 	return nil
 }
 
@@ -1030,6 +1051,11 @@ func writeFile(source, boundIndexPath, path string, in io.Reader) error {
 		if err := RefreshIndex(source, parentPath, true, false); err != nil {
 			logger.Debugf("Could not refresh parent directory %s: %v", parentPath, err)
 		}
+	}
+
+	idx.InvalidateRealPathCache(path, boundIndexPath)
+	if parent := utils.GetParentDirectoryPath(path); parent != "" && parent != "/" {
+		idx.InvalidateRealPathCache(parent, boundIndexPath)
 	}
 
 	return nil

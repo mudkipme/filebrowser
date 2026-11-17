@@ -12,11 +12,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/adapters/fs/files"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/adapters/fs/fileutils"
+	"github.com/gtsteffaniak/filebrowser/backend/internal/database/access"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/database/users"
 	commonerrors "github.com/gtsteffaniak/filebrowser/backend/internal/errors"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/quota"
 	"github.com/gtsteffaniak/filebrowser/backend/internal/state"
 	"github.com/gtsteffaniak/filebrowser/backend/pkg/indexing"
+	"github.com/gtsteffaniak/filebrowser/backend/pkg/indexing/iteminfo"
 	"github.com/gtsteffaniak/filebrowser/backend/pkg/settings"
 	"github.com/gtsteffaniak/go-logger/logger"
 )
@@ -170,6 +172,10 @@ func putResourceWithQuota(w http.ResponseWriter, r *http.Request, d *Context, so
 	if err != nil {
 		return sanitizePutPathError(err)
 	}
+	permUser := accessCheckUsername(d)
+	if !state.AccessPermittedAtRealPath(idx, permUser, realPath, access.IsDirAtRealPath(realPath)) {
+		return http.StatusForbidden, fmt.Errorf("access denied to path %s", fullIndexPath)
+	}
 	if stat, statErr := os.Stat(realPath); statErr == nil && stat.IsDir() {
 		return http.StatusMethodNotAllowed, errPutPathIsDirectory
 	}
@@ -312,4 +318,26 @@ func renderQuotaError(w http.ResponseWriter, r *http.Request, err error) (int, e
 		return status, renderErr
 	}
 	return status, nil
+}
+
+func prepareDeleteQuotaAdjustments(d *Context, sourceName, fullIndexPath string, fileInfo *iteminfo.ExtendedFileInfo) state.DeleteAdjustments {
+	sourceInfo, ok := settings.Config.Server.NameToSource[sourceName]
+	if !ok || fileInfo == nil {
+		return state.DeleteAdjustments{}
+	}
+	principal := quota.PrincipalForUpload(d.User, d.Share.UserID, d.Share.Hash)
+	isDir := fileInfo.Type == "directory"
+	var deleteBytes int64
+	if isDir {
+		deleteBytes, _ = state.IndexedPathBytes(sourceName, fullIndexPath, true)
+	} else {
+		deleteBytes = fileInfo.Size
+	}
+	return state.PrepareAccountedDelete(principal, sourceName, sourceInfo.Path, fullIndexPath, d.Share.Hash, isDir, deleteBytes)
+}
+
+func applyDeleteQuotaAdjustments(adj state.DeleteAdjustments) {
+	if err := state.ApplyAccountedDelete(adj); err != nil {
+		logger.Warningf("quota adjust after delete failed: %v", err)
+	}
 }

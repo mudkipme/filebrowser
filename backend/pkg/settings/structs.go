@@ -25,17 +25,28 @@ type Settings struct {
 }
 
 type Http struct {
-	Socket            string `json:"socket"`            // socket to listen on - eg. /var/run/filebrowser.sock
-	TLSKey            string `json:"tlsKey"`            // path to TLS key
-	TLSCert           string `json:"tlsCert"`           // path to TLS cert
-	Port              int    `json:"port"`              // port to listen on
-	ListenAddress     string `json:"listen"`            // address to listen on (default: 0.0.0.0)
-	BaseURL           string `json:"baseURL"`           // base URL for the server, the subpath that the server is running on.
-	ExternalUrl       string `json:"externalUrl"`       // used by share links if set (eg. http://mydomain.com)
-	InternalUrl       string `json:"internalUrl"`       // used by integrations if set, this is the base domain that an integration service will use to communicate with filebrowser (eg. http://localhost:8080)
-	DisableWebDAV     bool   `json:"disableWebDAV"`     // disable webdav support (default: false)
-	TrustProxyHeaders bool   `json:"trustProxyHeaders"` // honor X-Forwarded-* and X-Real-IP from a reverse proxy (default: false)
-	DisableRateLimit  bool   `json:"disableRateLimit"`  // turns off built-in auth route rate limiting and failed-login lockout (default false).
+	Socket            string   `json:"socket"`            // socket to listen on - eg. /var/run/filebrowser.sock
+	TLSKey            string   `json:"tlsKey"`            // path to TLS key
+	TLSCert           string   `json:"tlsCert"`           // path to TLS cert
+	Port              int      `json:"port"`              // port to listen on
+	ListenAddress     string   `json:"listen"`            // address to listen on (default: 0.0.0.0)
+	BaseURL           string   `json:"baseURL"`           // base URL for the server, the subpath that the server is running on.
+	ExternalUrl       string   `json:"externalUrl"`       // used by share links if set (eg. http://mydomain.com)
+	InternalUrl       string   `json:"internalUrl"`       // used by integrations if set, this is the base domain that an integration service will use to communicate with filebrowser (eg. http://localhost:8080)
+	DisableWebDAV     bool     `json:"disableWebDAV"`     // disable webdav support (default: false)
+	TrustProxyHeaders bool     `json:"trustProxyHeaders"` // honor X-Forwarded-* and X-Real-IP from a reverse proxy (default: false)
+	TrustedProxies    []string `json:"trustedProxies"`    // IPs/CIDRs of trusted proxies; forwarded client headers are only honored when the socket peer matches one of these (default: empty = forwarded headers ignored)
+	// UnixSocketTrustedUIDs and UnixSocketTrustedGIDs list peer credentials (Linux SO_PEERCRED) allowed to
+	// present X-Forwarded-* on a filesystem http.socket listener. When both are empty, peers are not trusted
+	// unless UnixSocketTrustAllLocalPeers is true (legacy; startup logs a warning). A GID allowlist trusts
+	// every peer with that GID, not only a single reverse-proxy process. Abstract sockets (@name) never trust
+	// forwarded headers.
+	UnixSocketTrustedUIDs        []int  `json:"unixSocketTrustedUIDs"`
+	UnixSocketTrustedGIDs        []int  `json:"unixSocketTrustedGIDs"`
+	UnixSocketTrustAllLocalPeers bool   `json:"unixSocketTrustAllLocalPeers"` // default false: set true to trust forwarded headers from any local filesystem socket peer when allowlists are empty
+	SocketFileMode               string `json:"socketFileMode"`               // octal mode for filesystem http.socket (default "0660"); ignored for abstract sockets
+	SocketGroup           string `json:"socketGroup"`      // optional group name or numeric gid for the socket file (filesystem sockets only)
+	DisableRateLimit      bool   `json:"disableRateLimit"` // turns off built-in auth route rate limiting and failed-login lockout (default false).
 }
 
 type Environment struct {
@@ -70,11 +81,12 @@ type Server struct {
 	DisableTypeDetectionByHeader bool           `json:"disableTypeDetectionByHeader"`                                  // disable type detection by header, useful if filesystem is slow.
 	Logging                      []LogConfig    `json:"logging" yaml:"logging"`
 	Sources                      []*Source      `json:"sources" validate:"required,dive"`
-	CacheDir                     string         `json:"cacheDir"`        // path to the cache directory, used for thumbnails and other cached files
-	CacheDirCleanup              bool           `json:"cacheDirCleanup"` // whether to automatically cleanup the cache directory. Note: docker must also mount a persistent volume to persist the cache (default: false)
-	MaxArchiveSizeGB             int64          `json:"maxArchiveSize"`  // maximum archive/unarchive size in GB. 0 means no limit. (default: 20)
-	Filesystem                   Filesystem     `json:"filesystem"`      // filesystem settings
-	IndexSqlConfig               IndexSqlConfig `json:"indexSqlConfig"`  // Index database SQL configuration
+	CacheDir                     string         `json:"cacheDir"`          // path to the cache directory, used for thumbnails and other cached files
+	CacheDirCleanup              bool           `json:"cacheDirCleanup"`   // whether to automatically cleanup the cache directory. Note: docker must also mount a persistent volume to persist the cache (default: false)
+	CacheDirMaxSizeMB            int64          `json:"cacheDirMaxSizeMB"` // maximum size in MB of the preview cache (cacheDir/diskcache). Past it, the least recently used files are deleted. 0 means no limit (default: 0)
+	MaxArchiveSizeGB             int64          `json:"maxArchiveSize"`    // maximum archive/unarchive size in GB. 0 means no limit. (default: 20)
+	Filesystem                   Filesystem     `json:"filesystem"`        // filesystem settings
+	IndexSqlConfig               IndexSqlConfig `json:"indexSqlConfig"`    // Index database SQL configuration
 	// not exposed to config
 	SourceMap    map[string]*Source `json:"-" validate:"omitempty"` // uses realpath as key
 	NameToSource map[string]*Source `json:"-" validate:"omitempty"` // uses name as key

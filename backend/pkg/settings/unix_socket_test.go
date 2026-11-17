@@ -1,0 +1,84 @@
+package settings
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
+
+func TestParseSocketFileModeDefaults(t *testing.T) {
+	mode, err := parseSocketFileMode("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != 0o660 {
+		t.Fatalf("got %o, want 0660", mode)
+	}
+}
+
+func TestParseSocketFileModeCustom(t *testing.T) {
+	mode, err := parseSocketFileMode("0600")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != 0o600 {
+		t.Fatalf("got %o, want 0600", mode)
+	}
+}
+
+func TestValidateHttpConfigRejectsBadSocketFileMode(t *testing.T) {
+	err := ValidateHttpConfig(Http{SocketFileMode: "not-octal"})
+	if err == nil {
+		t.Fatal("expected validation error for socketFileMode")
+	}
+}
+
+func TestUnixPeerAllowed(t *testing.T) {
+	Config.Http.UnixSocketTrustedUIDs = []int{10}
+	Config.Http.UnixSocketTrustedGIDs = []int{20}
+	t.Cleanup(func() {
+		Config.Http.UnixSocketTrustedUIDs = nil
+		Config.Http.UnixSocketTrustedGIDs = nil
+	})
+	if !unixPeerAllowed(10, 999) {
+		t.Fatal("expected UID match")
+	}
+	if !unixPeerAllowed(999, 20) {
+		t.Fatal("expected GID match")
+	}
+	if unixPeerAllowed(1, 1) {
+		t.Fatal("expected no match")
+	}
+	Config.Http.UnixSocketTrustedUIDs = nil
+	Config.Http.UnixSocketTrustedGIDs = nil
+	if unixPeerAllowed(0, 0) {
+		t.Fatal("empty allowlists must deny")
+	}
+}
+
+func TestListenUnixFilesystemSetsModeWithRestrictiveUmask(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("filesystem unix sockets are not used on Windows")
+	}
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "fb.sock")
+	orig := Config.Http
+	Config.Http.SocketFileMode = ""
+	t.Cleanup(func() {
+		Config.Http = orig
+		_ = os.Remove(socketPath)
+	})
+	ln, err := ListenUnixFilesystem(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	st, err := os.Stat(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o660 {
+		t.Fatalf("socket perm = %o, want 0660", st.Mode().Perm())
+	}
+}
